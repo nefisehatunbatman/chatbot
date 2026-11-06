@@ -4,18 +4,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "./Markdown";
 import ModelPicker from "./ModelPicker";
 import { Icon } from "./Icons";
-import type { Attachment, Conv, ModelInfo, Msg, Theme } from "@/lib/types";
-import { ACCEPT, fileToAttachment, formatSize } from "@/lib/files";
-import { toApiMessages } from "@/lib/api-messages";
+import type { AttachmentMeta, ConvSummary, Me, ModelInfo, Msg, PendingAttachment, Recommended, Theme } from "@/lib/types";
+import { ACCEPT, formatSize, uploadAttachment } from "@/lib/files";
 import { readSSE } from "@/lib/sse";
-import { loadState, saveState } from "@/lib/storage";
 
-const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const tmpId = () => "tmp-" + Math.random().toString(36).slice(2);
 
-function makeTitle(text: string, atts: Attachment[]) {
-  const t = text.replace(/\s+/g, " ").trim();
-  if (t) return t.length > 48 ? t.slice(0, 48) + "…" : t;
-  return atts[0]?.name || "Yeni sohbet";
+// fetch sarmalayıcı: oturum düşerse giriş ekranına yollar
+async function api<T = any>(url: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(url, init);
+  if (r.status === 401) {
+    location.href = "/login";
+    throw new Error("Oturum kapalı");
+  }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Hata (${r.status})`);
+  return j as T;
 }
 
 function CopyBtn({ text }: { text: string }) {
@@ -36,40 +40,74 @@ function CopyBtn({ text }: { text: string }) {
   );
 }
 
-function AttachmentChip({ a, onRemove }: { a: Attachment; onRemove?: () => void }) {
+const kindLabel = (k: string) => (k === "pdf" ? "PDF" : k === "image" ? "Görsel" : "Metin");
+
+// Gönderilmiş ek: görsel önizleme veya dosya kartı, ikisinde de indirme butonu
+function SentAttachment({ a }: { a: AttachmentMeta }) {
+  const href = `/api/files/${a.id}`;
+  const dl = `${href}?download=1`;
+  if (a.kind === "image") {
+    return (
+      <div className="att att-img" title={a.name}>
+        <a href={href} target="_blank" rel="noopener">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={`${href}?variant=model`} alt={a.name} loading="lazy" />
+        </a>
+        <a className="att-dl" href={dl} download={a.name} title="İndir"><Icon.Download /></a>
+      </div>
+    );
+  }
   return (
-    <div className={"att" + (a.kind === "image" ? " att-img" : "")} title={a.name}>
-      {a.kind === "image" && a.dataUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={a.dataUrl} alt={a.name} />
-      ) : (
-        <>
-          <span className="att-icon"><Icon.File /></span>
-          <span className="att-meta">
-            <span className="att-name">{a.name}</span>
-            <span className="att-kind">
-              {a.kind === "pdf" ? "PDF" : a.kind === "image" ? "Görsel" : "Metin"} · {formatSize(a.size)}
-            </span>
-          </span>
-        </>
-      )}
-      {onRemove && (
-        <button className="att-x" onClick={onRemove} title="Kaldır"><Icon.X /></button>
-      )}
+    <div className="att" title={a.name}>
+      <span className="att-icon"><Icon.File /></span>
+      <a className="att-meta" href={href} target="_blank" rel="noopener">
+        <span className="att-name">{a.name}</span>
+        <span className="att-kind">{kindLabel(a.kind)} · {formatSize(a.size)}</span>
+      </a>
+      <a className="icon-btn sm" href={dl} download={a.name} title="İndir"><Icon.Download /></a>
     </div>
   );
 }
 
-export default function Chat() {
-  const [convs, setConvs] = useState<Conv[]>([]);
+function PendingChip({ p, onRemove }: { p: PendingAttachment; onRemove: () => void }) {
+  const uploading = !p.meta && !p.error;
+  return (
+    <div className={"att" + (p.previewUrl ? " att-img" : "") + (p.error ? " att-err" : "")} title={p.error || p.name}>
+      {p.previewUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={p.previewUrl} alt={p.name} />
+      ) : (
+        <>
+          <span className="att-icon"><Icon.File /></span>
+          <span className="att-meta">
+            <span className="att-name">{p.name}</span>
+            <span className="att-kind">{p.error ? "Yüklenemedi" : `${kindLabel(p.kind)} · ${formatSize(p.size)}`}</span>
+          </span>
+        </>
+      )}
+      {uploading && (
+        <div className="att-progress"><span style={{ width: `${Math.max(5, p.progress)}%` }} /></div>
+      )}
+      <button className="att-x" onClick={onRemove} title="Kaldır"><Icon.X /></button>
+    </div>
+  );
+}
+
+export default function Chat({ initialMe }: { initialMe: Me }) {
+  const [me] = useState<Me>(initialMe);
+  const [convs, setConvs] = useState<ConvSummary[]>([]);
+  const [convsLoaded, setConvsLoaded] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Msg[]>([]);
+  const [loadingConv, setLoadingConv] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [recommended, setRecommended] = useState<Recommended>({ free: [], paid: [] });
   const [modelsError, setModelsError] = useState<string | null>(null);
-  const [model, setModel] = useState<string>("openai/gpt-4o-mini");
-  const [system, setSystem] = useState("");
-  const [theme, setTheme] = useState<Theme>("system");
+  const [model, setModel] = useState<string>(initialMe.user.settings.model || "");
+  const [system, setSystem] = useState(initialMe.user.settings.system || "");
+  const [theme, setTheme] = useState<Theme>(initialMe.user.settings.theme || "system");
   const [input, setInput] = useState("");
-  const [pending, setPending] = useState<Attachment[]>([]);
+  const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -78,43 +116,53 @@ export default function Chat() {
   const [dragging, setDragging] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
-  const [loaded, setLoaded] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
-  const savedModelRef = useRef<string | null>(null);
-  const storageWarned = useRef(false);
+  const loadToken = useRef(0);
+  const settingsReady = useRef(false);
 
-  // --- Yükleme / kaydetme ---
-  useEffect(() => {
-    const s = loadState();
-    if (s) {
-      setConvs(s.convs || []);
-      setActiveId(s.activeId ?? null);
-      if (s.model) {
-        setModel(s.model);
-        savedModelRef.current = s.model;
-      }
-      setSystem(s.system || "");
-      setTheme(s.theme || "system");
+  // --- İlk yükleme ---
+  const refreshConvs = useCallback(async () => {
+    try {
+      const j = await api<{ conversations: ConvSummary[] }>("/api/conversations");
+      setConvs(j.conversations);
+    } catch (e) {
+      setNotice((e as Error).message);
+    } finally {
+      setConvsLoaded(true);
     }
-    setLoaded(true);
   }, []);
 
   useEffect(() => {
-    if (!loaded) return;
+    refreshConvs();
+    api<{ models: ModelInfo[]; recommended: Recommended; defaultModel: string }>("/api/models")
+      .then((j) => {
+        setModels(j.models);
+        setRecommended(j.recommended);
+        setModel((cur) => (cur && j.models.some((m) => m.id === cur) ? cur : j.defaultModel || j.models[0]?.id || cur));
+      })
+      .catch((e) => setModelsError(e.message));
+  }, [refreshConvs]);
+
+  // Ayarlar sunucuda, kullanıcıya özel saklanır (her cihazda aynı)
+  useEffect(() => {
+    if (!settingsReady.current) {
+      settingsReady.current = true;
+      return;
+    }
     const t = setTimeout(() => {
-      const r = saveState({ convs, activeId, model, system, theme });
-      if (r !== "ok" && !storageWarned.current) {
-        storageWarned.current = true;
-        setNotice("Tarayıcı depolaması doldu. Eski eklerin içerikleri kaydedilmedi; eski sohbetleri silmeyi düşünebilirsin.");
-      }
-    }, 400);
+      fetch("/api/me", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings: { system, theme, model } }),
+      }).catch(() => {});
+    }, 600);
     return () => clearTimeout(t);
-  }, [convs, activeId, model, system, theme, loaded]);
+  }, [system, theme, model]);
 
   useEffect(() => {
     const el = document.documentElement;
@@ -122,34 +170,14 @@ export default function Chat() {
     else el.setAttribute("data-theme", theme);
   }, [theme]);
 
-  useEffect(() => {
-    fetch("/api/models")
-      .then(async (r) => {
-        if (r.status === 401) {
-          location.href = "/login";
-          return;
-        }
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.error || "Modeller alınamadı");
-        const list: ModelInfo[] = j.models;
-        setModels(list);
-        if (!savedModelRef.current) {
-          const def = list.find((m) => m.id === j.defaultModel) ? j.defaultModel : list[0]?.id;
-          if (def) setModel(def);
-        }
-      })
-      .catch((e) => setModelsError(e.message));
-  }, []);
-
-  const active = convs.find((c) => c.id === activeId) || null;
   const currentModel = models.find((m) => m.id === model);
   const modelName = (id?: string) => (id ? models.find((m) => m.id === id)?.name || id : "");
 
-  // --- Otomatik kaydırma ve metin kutusu boyutu ---
+  // --- Kaydırma ve metin kutusu ---
   useEffect(() => {
     const el = scrollRef.current;
     if (el && stickRef.current) el.scrollTop = el.scrollHeight;
-  }, [active?.messages]);
+  }, [messages]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -163,30 +191,65 @@ export default function Chat() {
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
   }, [input, activeId]);
 
-  const updateConv = useCallback((id: string, fn: (c: Conv) => Conv) => {
-    setConvs((cs) => cs.map((c) => (c.id === id ? fn(c) : c)));
-  }, []);
-
-  async function addFiles(files: FileList | File[]) {
-    for (const f of Array.from(files)) {
-      try {
-        const a = await fileToAttachment(f);
-        setPending((p) => [...p, a]);
-      } catch (e) {
-        setNotice((e as Error).message);
-      }
+  // --- Sohbet açma ---
+  async function loadConv(id: string, opts: { quiet?: boolean } = {}) {
+    const token = ++loadToken.current;
+    if (!opts.quiet) setLoadingConv(true);
+    try {
+      const j = await api<{ messages: Msg[] }>(`/api/conversations/${id}`);
+      if (token === loadToken.current) setMessages(j.messages);
+    } catch (e) {
+      if (token === loadToken.current) setNotice((e as Error).message);
+    } finally {
+      if (token === loadToken.current) setLoadingConv(false);
     }
   }
 
+  function openConv(id: string) {
+    if (streaming) stop();
+    setActiveId(id);
+    setMessages([]);
+    setEditingId(null);
+    setSidebarOpen(false);
+    stickRef.current = true;
+    loadConv(id);
+  }
+
+  // --- Dosya ekleme ---
+  async function addFiles(files: FileList | File[]) {
+    for (const f of Array.from(files)) {
+      const key = tmpId();
+      const isImg = f.type.startsWith("image/");
+      const item: PendingAttachment = {
+        key,
+        name: f.name || "dosya",
+        kind: isImg ? "image" : f.type === "application/pdf" || /\.pdf$/i.test(f.name) ? "pdf" : "text",
+        size: f.size,
+        previewUrl: isImg ? URL.createObjectURL(f) : undefined,
+        progress: 0,
+      };
+      setPending((p) => [...p, item]);
+      const patch = (x: Partial<PendingAttachment>) => setPending((p) => p.map((it) => (it.key === key ? { ...it, ...x } : it)));
+      uploadAttachment(f, me, (pct) => patch({ progress: pct }))
+        .then((meta) => patch({ meta, progress: 100 }))
+        .catch((e) => {
+          patch({ error: (e as Error).message });
+          setNotice((e as Error).message);
+        });
+    }
+  }
+
+  function removePending(p: PendingAttachment) {
+    setPending((list) => list.filter((x) => x.key !== p.key));
+    if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
+    if (p.meta) fetch(`/api/files/${p.meta.id}`, { method: "DELETE" }).catch(() => {});
+  }
+
   // --- Modelden cevap alma ---
-  async function runCompletion(convId: string, history: Msg[]) {
-    const asstId = uid();
+  async function runStream(body: Record<string, unknown>, optimistic: Msg[]) {
+    const asstId = tmpId();
     const usedModel = model;
-    updateConv(convId, (c) => ({
-      ...c,
-      messages: [...history, { id: asstId, role: "assistant", content: "", model: usedModel }],
-      updatedAt: Date.now(),
-    }));
+    setMessages([...optimistic, { id: asstId, role: "assistant", content: "", model: usedModel }]);
     setStreaming(true);
     stickRef.current = true;
     const ac = new AbortController();
@@ -195,30 +258,26 @@ export default function Chat() {
     let content = "";
     let reasoning = "";
     let last = 0;
-    const flush = () =>
-      updateConv(convId, (c) => ({
-        ...c,
-        messages: c.messages.map((m) =>
-          m.id === asstId ? { ...m, content, reasoning: reasoning || undefined } : m
-        ),
-      }));
+    let convId = (body.conversationId as string) || "";
+    let aborted = false;
+    const patch = (x: Partial<Msg>) => setMessages((ms) => ms.map((m) => (m.id === asstId ? { ...m, ...x } : m)));
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: usedModel,
-          system: system.trim() || undefined,
-          messages: toApiMessages(history, currentModel ? currentModel.image : true),
-        }),
+        body: JSON.stringify({ ...body, model: usedModel, imageSupport: currentModel ? currentModel.image : true }),
         signal: ac.signal,
       });
       if (res.status === 401) {
         location.href = "/login";
         return;
       }
-      if (res.status === 413) throw new Error("Gönderilen ekler çok büyük. Daha az veya daha küçük dosya dene.");
+      convId = res.headers.get("X-Conversation-Id") || convId;
+      if (convId && !body.conversationId) {
+        setActiveId(convId);
+        refreshConvs();
+      }
       if (!res.ok || !res.body) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || `Sunucu hatası (${res.status})`);
@@ -229,28 +288,28 @@ export default function Chat() {
         const now = performance.now();
         if (now - last > 40) {
           last = now;
-          flush();
+          patch({ content, reasoning: reasoning || undefined });
         }
       });
-      flush();
-      if (!content && !reasoning) throw new Error("Model boş yanıt döndürdü. Tekrar dene veya başka model seç.");
+      patch({ content, reasoning: reasoning || undefined });
     } catch (e) {
-      flush();
       const err = e as Error;
-      if (err.name !== "AbortError") {
-        updateConv(convId, (c) => ({
-          ...c,
-          messages: c.messages.map((m) => (m.id === asstId ? { ...m, error: err.message || "Bilinmeyen hata" } : m)),
-        }));
-      }
+      if (err.name === "AbortError") aborted = true;
+      else patch({ content, error: err.message || "Bilinmeyen hata" });
     } finally {
       setStreaming(false);
       abortRef.current = null;
+      if (convId) {
+        // Sunucunun kaydettiği hâli yükle (durdurulduysa kaydın bitmesini kısa süre bekle)
+        if (aborted) await new Promise((r) => setTimeout(r, 900));
+        await loadConv(convId, { quiet: true });
+        refreshConvs();
+      }
     }
   }
 
-  function checkImages(atts: Attachment[]) {
-    if (atts.some((a) => a.kind === "image") && currentModel && !currentModel.image) {
+  function checkImages(hasImage: boolean) {
+    if (hasImage && currentModel && !currentModel.image) {
       setNotice(`"${currentModel.name}" görsel desteklemiyor. Model menüsünden "Görsel destekli" filtresiyle bir model seç.`);
       return false;
     }
@@ -259,100 +318,119 @@ export default function Chat() {
 
   async function send() {
     const text = input.trim();
-    if ((!text && pending.length === 0) || streaming) return;
-    if (!checkImages(pending)) return;
-
-    const userMsg: Msg = {
-      id: uid(),
-      role: "user",
-      content: text,
-      attachments: pending.length ? pending : undefined,
-    };
-    let convId = activeId;
-    let history: Msg[];
-    if (!active || !convId) {
-      convId = uid();
-      const conv: Conv = { id: convId, title: makeTitle(text, pending), messages: [], updatedAt: Date.now() };
-      setConvs((cs) => [conv, ...cs]);
-      setActiveId(convId);
-      history = [userMsg];
-    } else {
-      history = [...active.messages, userMsg];
+    if (streaming) return;
+    if (pending.some((p) => !p.meta && !p.error)) {
+      setNotice("Dosyalar yüklenirken bekle…");
+      return;
     }
+    const ready = pending.filter((p) => p.meta).map((p) => p.meta!);
+    if (!text && ready.length === 0) return;
+    if (!model) {
+      setNotice("Önce bir model seç.");
+      return;
+    }
+    if (!checkImages(ready.some((a) => a.kind === "image"))) return;
+
+    const userMsg: Msg = { id: tmpId(), role: "user", content: text, attachments: ready.length ? ready : undefined };
+    const base = activeId ? messages : [];
+    pending.forEach((p) => p.previewUrl && URL.revokeObjectURL(p.previewUrl));
     setInput("");
     setPending([]);
     setNotice(null);
-    await runCompletion(convId, history);
+    await runStream(
+      { mode: "send", conversationId: activeId || undefined, text, attachmentIds: ready.map((a) => a.id) },
+      [...base, userMsg]
+    );
   }
 
   function stop() {
     abortRef.current?.abort();
   }
 
-  function regenerate(msgId: string) {
-    if (!active || streaming) return;
-    const idx = active.messages.findIndex((m) => m.id === msgId);
-    if (idx < 0) return;
-    const history = active.messages.slice(0, idx);
-    const lastUser = [...history].reverse().find((m) => m.role === "user");
-    if (lastUser && !checkImages(lastUser.attachments || [])) return;
-    runCompletion(active.id, history);
+  function regenerate() {
+    if (!activeId || streaming) return;
+    let lastUser = -1;
+    messages.forEach((m, i) => m.role === "user" && (lastUser = i));
+    if (lastUser < 0) return;
+    if (!checkImages(!!messages[lastUser].attachments?.some((a) => a.kind === "image"))) return;
+    runStream({ mode: "regenerate", conversationId: activeId }, messages.slice(0, lastUser + 1));
   }
 
   function saveEdit(msgId: string) {
-    if (!active || streaming) return;
-    const idx = active.messages.findIndex((m) => m.id === msgId);
+    if (!activeId || streaming) return;
+    const idx = messages.findIndex((m) => m.id === msgId);
     if (idx < 0) return;
-    const orig = active.messages[idx];
-    if (!editText.trim() && !orig.attachments?.length) return;
-    const history = [...active.messages.slice(0, idx), { ...orig, content: editText.trim() }];
+    const orig = messages[idx];
+    const text = editText.trim();
+    if (!text && !orig.attachments?.length) return;
     setEditingId(null);
-    runCompletion(active.id, history);
+    runStream(
+      { mode: "edit", conversationId: activeId, editMessageId: msgId, text },
+      [...messages.slice(0, idx), { ...orig, content: text }]
+    );
   }
 
   function newChat() {
     if (streaming) stop();
+    loadToken.current++;
     setActiveId(null);
+    setMessages([]);
     setInput("");
-    setPending([]);
     setEditingId(null);
     setSidebarOpen(false);
     setTimeout(() => taRef.current?.focus(), 0);
   }
 
-  function renameConv(id: string) {
+  async function renameConv(id: string) {
     const c = convs.find((x) => x.id === id);
     const t = prompt("Sohbet adı", c?.title || "");
-    if (t && t.trim()) updateConv(id, (x) => ({ ...x, title: t.trim() }));
-  }
-
-  function deleteConv(id: string) {
-    if (!confirm("Bu sohbet silinsin mi?")) return;
-    if (id === activeId) {
-      if (streaming) stop();
-      setActiveId(null);
+    if (!t || !t.trim()) return;
+    try {
+      await api(`/api/conversations/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: t.trim() }),
+      });
+      setConvs((cs) => cs.map((x) => (x.id === id ? { ...x, title: t.trim() } : x)));
+    } catch (e) {
+      setNotice((e as Error).message);
     }
-    setConvs((cs) => cs.filter((c) => c.id !== id));
   }
 
-  function deleteAll() {
-    if (!confirm("TÜM sohbetler bu tarayıcıdan silinsin mi?")) return;
+  async function deleteConv(id: string) {
+    if (!confirm("Bu sohbet ve ekleri kalıcı olarak silinsin mi?")) return;
+    try {
+      await api(`/api/conversations/${id}`, { method: "DELETE" });
+      setConvs((cs) => cs.filter((c) => c.id !== id));
+      if (id === activeId) newChat();
+    } catch (e) {
+      setNotice((e as Error).message);
+    }
+  }
+
+  async function deleteAll() {
+    if (!confirm("TÜM sohbetlerin ve eklerin kalıcı olarak silinsin mi?")) return;
     if (streaming) stop();
+    for (const c of convs) {
+      await api(`/api/conversations/${c.id}`, { method: "DELETE" }).catch(() => {});
+    }
     setConvs([]);
-    setActiveId(null);
+    newChat();
     setSettingsOpen(false);
   }
 
   async function logout() {
-    await fetch("/api/login", { method: "DELETE" }).catch(() => {});
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
     location.href = "/login";
   }
 
   const q = convSearch.toLocaleLowerCase("tr");
-  const filteredConvs = convs
-    .filter((c) => c.title.toLocaleLowerCase("tr").includes(q))
-    .sort((a, b) => b.updatedAt - a.updatedAt);
-  const lastAsstId = active ? [...active.messages].reverse().find((m) => m.role === "assistant")?.id : undefined;
+  const filteredConvs = convs.filter((c) => c.title.toLocaleLowerCase("tr").includes(q));
+  const activeTitle = convs.find((c) => c.id === activeId)?.title || "";
+  const lastAsstId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
+  const uploading = pending.some((p) => !p.meta && !p.error);
+  const canSend = !uploading && (!!input.trim() || pending.some((p) => p.meta));
+  const showChat = !!activeId || messages.length > 0;
 
   const composer = (
     <div className="composer-wrap">
@@ -365,16 +443,14 @@ export default function Chat() {
       <div className="composer">
         {pending.length > 0 && (
           <div className="pending">
-            {pending.map((a) => (
-              <AttachmentChip key={a.id} a={a} onRemove={() => setPending((p) => p.filter((x) => x.id !== a.id))} />
-            ))}
+            {pending.map((p) => <PendingChip key={p.key} p={p} onRemove={() => removePending(p)} />)}
           </div>
         )}
         <textarea
           ref={taRef}
           value={input}
           rows={1}
-          placeholder={active ? "Yanıtla…" : "Bir mesaj yaz…"}
+          placeholder={showChat ? "Yanıtla…" : "Bir mesaj yaz…"}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -405,12 +481,12 @@ export default function Chat() {
               e.target.value = "";
             }}
           />
-          <ModelPicker models={models} value={model} onChange={setModel} error={modelsError} />
+          <ModelPicker models={models} recommended={recommended} value={model} onChange={setModel} error={modelsError} />
           <div className="spacer" />
           {streaming ? (
             <button className="send-btn" title="Durdur" onClick={stop}><Icon.Stop /></button>
           ) : (
-            <button className="send-btn" title="Gönder" disabled={!input.trim() && pending.length === 0} onClick={send}>
+            <button className="send-btn" title={uploading ? "Dosyalar yükleniyor…" : "Gönder"} disabled={!canSend} onClick={send}>
               <Icon.ArrowUp />
             </button>
           )}
@@ -450,17 +526,10 @@ export default function Chat() {
         </div>
         <div className="conv-label">Sohbetler</div>
         <div className="conv-list">
-          {filteredConvs.length === 0 && <div className="muted small pad">Henüz sohbet yok</div>}
+          {!convsLoaded && <div className="muted small pad">Yükleniyor…</div>}
+          {convsLoaded && filteredConvs.length === 0 && <div className="muted small pad">Henüz sohbet yok</div>}
           {filteredConvs.map((c) => (
-            <div
-              key={c.id}
-              className={"conv-item" + (c.id === activeId ? " active" : "")}
-              onClick={() => {
-                setActiveId(c.id);
-                setEditingId(null);
-                setSidebarOpen(false);
-              }}
-            >
+            <div key={c.id} className={"conv-item" + (c.id === activeId ? " active" : "")} onClick={() => openConv(c.id)}>
               <span className="conv-title">{c.title}</span>
               <span className="conv-actions">
                 <button className="icon-btn sm" title="Yeniden adlandır" onClick={(e) => { e.stopPropagation(); renameConv(c.id); }}>
@@ -473,31 +542,38 @@ export default function Chat() {
             </div>
           ))}
         </div>
-        <button className="sidebar-foot" onClick={() => setSettingsOpen(true)}><Icon.Settings /> Ayarlar</button>
+        <button className="sidebar-foot" onClick={() => setSettingsOpen(true)}>
+          <span className="avatar">{me.user.username.slice(0, 1).toUpperCase()}</span>
+          <span className="foot-name">{me.user.username}</span>
+          <Icon.Settings />
+        </button>
       </aside>
       {sidebarOpen && <div className="scrim" onClick={() => setSidebarOpen(false)} />}
 
       <main className="main">
         <header className="topbar">
           <button className="icon-btn mobile-only" onClick={() => setSidebarOpen(true)} title="Menü"><Icon.Menu /></button>
-          <div className="topbar-title">{active?.title || ""}</div>
+          <div className="topbar-title">{showChat ? activeTitle : ""}</div>
           <button className="icon-btn mobile-only" onClick={newChat} title="Yeni sohbet"><Icon.Plus /></button>
         </header>
 
-        {!active ? (
+        {!showChat ? (
           <div className="empty">
-            <h1 className="greeting"><span className="greet-mark"><Icon.Sparkle /></span> Bugün nasıl yardımcı olabilirim?</h1>
+            <h1 className="greeting">
+              <span className="greet-mark"><Icon.Sparkle /></span> Merhaba {me.user.username}, bugün nasıl yardımcı olabilirim?
+            </h1>
             {composer}
           </div>
         ) : (
           <>
             <div className="messages" ref={scrollRef} onScroll={onScroll}>
               <div className="messages-inner">
-                {active.messages.map((m) =>
+                {loadingConv && messages.length === 0 && <div className="muted small pad center">Sohbet yükleniyor…</div>}
+                {messages.map((m) =>
                   m.role === "user" ? (
                     <div key={m.id} className="msg user">
                       {m.attachments && (
-                        <div className="msg-atts">{m.attachments.map((a) => <AttachmentChip key={a.id} a={a} />)}</div>
+                        <div className="msg-atts">{m.attachments.map((a) => <SentAttachment key={a.id} a={a} />)}</div>
                       )}
                       {editingId === m.id ? (
                         <div className="edit-box">
@@ -513,7 +589,7 @@ export default function Chat() {
                       {editingId !== m.id && (
                         <div className="msg-actions">
                           <CopyBtn text={m.content} />
-                          {!streaming && (
+                          {!streaming && !m.id.startsWith("tmp-") && (
                             <button className="icon-btn sm" title="Düzenle" onClick={() => { setEditingId(m.id); setEditText(m.content); }}>
                               <Icon.Pencil />
                             </button>
@@ -539,7 +615,7 @@ export default function Chat() {
                         <div className="msg-actions">
                           <CopyBtn text={m.content} />
                           {m.id === lastAsstId && (
-                            <button className="icon-btn sm" title="Yeniden oluştur (seçili modelle)" onClick={() => regenerate(m.id)}>
+                            <button className="icon-btn sm" title="Yeniden oluştur (seçili modelle)" onClick={regenerate}>
                               <Icon.Refresh />
                             </button>
                           )}
@@ -563,6 +639,7 @@ export default function Chat() {
               <h2>Ayarlar</h2>
               <button className="icon-btn" onClick={() => setSettingsOpen(false)} title="Kapat"><Icon.X /></button>
             </div>
+            <p className="muted small">Giriş yapan: <b>{me.user.username}</b></p>
             <label className="field">
               <span>Sistem talimatı (her sohbete eklenir)</span>
               <textarea
@@ -580,11 +657,13 @@ export default function Chat() {
                 <option value="dark">Koyu</option>
               </select>
             </label>
-            <p className="muted small">Sohbetler yalnızca bu tarayıcıda saklanır, sunucuya kaydedilmez.</p>
+            <p className="muted small">
+              Sohbetlerin ve eklerin hesabına kayıtlı; telefondan veya başka bir bilgisayardan girdiğinde de görünür.
+            </p>
             <div className="modal-actions">
               <button className="btn danger" onClick={deleteAll}>Tüm sohbetleri sil</button>
               <div className="spacer" />
-              <button className="btn ghost" onClick={logout}>Çıkış yap</button>
+              <button className="btn ghost" onClick={logout}><Icon.Logout /> Çıkış yap</button>
             </div>
           </div>
         </div>

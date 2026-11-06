@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ModelInfo } from "@/lib/types";
+import type { ModelInfo, Recommended } from "@/lib/types";
 import { Icon } from "./Icons";
 
 type Filter = "all" | "free" | "openai" | "anthropic" | "google" | "image";
@@ -13,10 +13,30 @@ const perMillion = (p: number) => {
 const fmtCtx = (n: number) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M` : `${Math.round(n / 1000)}K`;
 
+function ModelRow({ m, selected, onPick }: { m: ModelInfo; selected: boolean; onPick: () => void }) {
+  return (
+    <button className={"mp-item" + (selected ? " sel" : "")} onClick={onPick}>
+      <div className="mp-item-top">
+        <span className="mp-item-name">{m.name}</span>
+        {m.free ? <span className="badge free">Ücretsiz</span> : <span className="badge paid">Kredi kullanır</span>}
+        {m.image && <span className="badge">Görsel</span>}
+      </div>
+      <div className="mp-item-sub">
+        {m.id}
+        {m.context ? ` · ${fmtCtx(m.context)} bağlam` : ""}
+        {!m.free && (m.promptPrice || m.completionPrice)
+          ? ` · $${perMillion(m.promptPrice)} / $${perMillion(m.completionPrice)} (1M token girdi/çıktı)`
+          : ""}
+      </div>
+    </button>
+  );
+}
+
 export default function ModelPicker({
-  models, value, onChange, error,
+  models, recommended, value, onChange, error,
 }: {
   models: ModelInfo[];
+  recommended: Recommended;
   value: string;
   onChange: (id: string) => void;
   error: string | null;
@@ -40,8 +60,11 @@ export default function ModelPicker({
     };
   }, [open]);
 
-  const current = models.find((m) => m.id === value);
+  const byId = useMemo(() => new Map(models.map((m) => [m.id, m])), [models]);
+  const current = byId.get(value);
   const freeCount = useMemo(() => models.filter((m) => m.free).length, [models]);
+  const recFree = recommended.free.map((id) => byId.get(id)).filter((m): m is ModelInfo => !!m);
+  const recPaid = recommended.paid.map((id) => byId.get(id)).filter((m): m is ModelInfo => !!m);
 
   const list = useMemo(() => {
     const ql = q.toLocaleLowerCase("tr").trim();
@@ -53,6 +76,12 @@ export default function ModelPicker({
       return true;
     });
   }, [models, q, filter]);
+
+  const showRecommended = filter === "all" && !q.trim() && (recFree.length > 0 || recPaid.length > 0);
+  const pick = (id: string) => {
+    onChange(id);
+    setOpen(false);
+  };
 
   const chips: [Filter, string][] = [
     ["all", `Tümü (${models.length})`],
@@ -91,29 +120,30 @@ export default function ModelPicker({
           <div className="mp-list">
             {error && <div className="muted small pad">{error}</div>}
             {!error && models.length === 0 && <div className="muted small pad">Modeller yükleniyor…</div>}
-            {list.map((m) => (
-              <button
-                key={m.id}
-                className={"mp-item" + (m.id === value ? " sel" : "")}
-                onClick={() => {
-                  onChange(m.id);
-                  setOpen(false);
-                }}
-              >
-                <div className="mp-item-top">
-                  <span className="mp-item-name">{m.name}</span>
-                  {m.free && <span className="badge free">Ücretsiz</span>}
-                  {m.image && <span className="badge">Görsel</span>}
-                </div>
-                <div className="mp-item-sub">
-                  {m.id}
-                  {m.context ? ` · ${fmtCtx(m.context)} bağlam` : ""}
-                  {!m.free && (m.promptPrice || m.completionPrice)
-                    ? ` · $${perMillion(m.promptPrice)} / $${perMillion(m.completionPrice)} (1M token girdi/çıktı)`
-                    : ""}
-                </div>
-              </button>
-            ))}
+
+            {showRecommended && (
+              <>
+                {recFree.length > 0 && (
+                  <>
+                    <div className="mp-section">⭐ Önerilen · ücretsiz, krediden düşmez</div>
+                    {recFree.map((m) => <ModelRow key={"rf" + m.id} m={m} selected={m.id === value} onPick={() => pick(m.id)} />)}
+                  </>
+                )}
+                {recPaid.length > 0 && (
+                  <>
+                    <div className="mp-section">⭐ Önerilen · en iyi ChatGPT ve Claude (kredi kullanır)</div>
+                    {recPaid.map((m) => <ModelRow key={"rp" + m.id} m={m} selected={m.id === value} onPick={() => pick(m.id)} />)}
+                  </>
+                )}
+                <div className="mp-section">Tüm modeller</div>
+              </>
+            )}
+
+            {filter === "anthropic" && !q.trim() && models.length > 0 && (
+              <div className="mp-hint">Claude modellerinin hiçbiri ücretsiz değil; hepsi OpenRouter kredisi kullanır.</div>
+            )}
+
+            {list.map((m) => <ModelRow key={m.id} m={m} selected={m.id === value} onPick={() => pick(m.id)} />)}
             {models.length > 0 && list.length === 0 && <div className="muted small pad">Sonuç yok</div>}
           </div>
         </div>

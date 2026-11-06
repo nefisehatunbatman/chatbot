@@ -8,13 +8,26 @@ export type ModelInfo = {
   completionPrice: number; // $ / token
 };
 
-export type Attachment = {
+export type Recommended = { free: string[]; paid: string[] };
+
+export type AttachmentMeta = {
   id: string;
   name: string;
   kind: "image" | "pdf" | "text";
+  mime: string;
   size: number;
-  dataUrl?: string; // görsel ve PDF için
-  text?: string; // metin/kod dosyası için
+};
+
+// Yazma kutusunda bekleyen (yükleniyor / hazır) ek
+export type PendingAttachment = {
+  key: string;
+  name: string;
+  kind: "image" | "pdf" | "text";
+  size: number;
+  previewUrl?: string;
+  progress: number;
+  meta?: AttachmentMeta;
+  error?: string;
 };
 
 export type Msg = {
@@ -22,24 +35,16 @@ export type Msg = {
   role: "user" | "assistant";
   content: string;
   reasoning?: string;
-  attachments?: Attachment[];
+  attachments?: AttachmentMeta[];
   model?: string;
   error?: string;
 };
 
-export type Conv = {
-  id: string;
-  title: string;
-  messages: Msg[];
-  updatedAt: number;
-};
+export type ConvSummary = { id: string; title: string; updatedAt: number };
 
 export type Theme = "system" | "light" | "dark";
 
-export type SavedState = {
-  convs: Conv[];
-  activeId: string | null;
-  model: string | null;
-  system: string;
-  theme: Theme;
+export type Me = {
+  user: { id: string; username: string; settings: { system?: string; theme?: Theme; model?: string } };
+  blob: { enabled: boolean; access: "public" | "private" };
 };

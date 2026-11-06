@@ -1,57 +1,71 @@
 # Çoklu AI Sohbet
 
-OpenRouter üzerinden ChatGPT, Claude, Gemini, Llama ve diğer **tüm** modellerle konuşan, Claude benzeri bir sohbet arayüzü.
+OpenRouter üzerinden ChatGPT, Claude, Gemini, Llama ve diğer **tüm** modellerle konuşan, Claude benzeri bir sohbet uygulaması. Her kullanıcının kendi hesabı var; sohbetler ve dosyalar kalıcıdır, telefondan girildiğinde de görünür.
 
 ## Özellikler
 
-- OpenRouter'daki bütün modellerin listesi. Ücretsiz modellerde **"Ücretsiz"** rozeti görünür.
-- Model menüsünde arama ve filtreler: Ücretsiz, ChatGPT, Claude, Gemini, Görsel destekli.
-- Fotoğraf ekleme: dosya seçerek, sürükle-bırak ile veya Ctrl+V ile yapıştırarak. Fotoğraflar otomatik küçültülür.
-- PDF ve metin/kod dosyası ekleme.
-- Cevaplar kelime kelime akarak gelir. Durdur butonu var.
-- Markdown, renkli kod blokları ("Kopyala" butonlu), tablolar.
-- Mesaj düzenleme, cevabı yeniden oluşturma, kopyalama.
-- Düşünen modellerde "Düşünme süreci" bölümü.
-- Sol menüde sohbet geçmişi: arama, yeniden adlandırma, silme.
-- Ayarlarda sistem talimatı ve açık/koyu tema.
-- Mobil uyumlu.
-- Şifre koruması: linki bulan biri OpenRouter bakiyeni harcayamaz.
+- **Hesaplar:** Kullanıcı adı ve şifreyle giriş. Kayıt sadece davet koduyla yapılır. Herkes yalnızca kendi sohbetlerini görür.
+- **Kalıcı sohbetler:** Konuşmalar veritabanında saklanır. Bilgisayardan yazdığını telefondan devam ettirebilirsin.
+- **Kişisel ayarlar:** Sistem talimatı, tema ve son seçilen model hesabına kaydedilir.
+- **Dosya ve fotoğraf:** Ataç butonu, sürükle-bırak veya Ctrl+V ile eklenir. Eklenen dosya **orijinal haliyle** indirilebilir (⬇ butonu). Modele ise fotoğrafın küçültülmüş kopyası gider.
+- **Önerilen modeller:** Model menüsünün en üstünde iki grup var:
+  - *Ücretsiz:* `gpt-oss-120b` ve `gpt-oss-20b`. OpenRouter kredisinden düşmez.
+  - *En iyi ücretli:* en yeni ChatGPT, Claude Opus ve Claude Sonnet. Bunlar otomatik seçilir.
+- Tüm modellerde "Ücretsiz" veya "Kredi kullanır" rozeti görünür. Arama ve filtre var: Ücretsiz, ChatGPT, Claude, Gemini, Görsel destekli.
+- Akışlı cevap ve durdurma. Durdurulan cevabın yarısı da kaydedilir.
+- Mesaj düzenleme, cevabı yeniden oluşturma, kopyalama, markdown, renkli kod blokları.
+- Açık/koyu tema ve mobil uyumlu arayüz.
 
-## Vercel'e yayınlama (yaklaşık 5 dakika)
+> **Not:** OpenRouter'da ücretsiz Claude modeli yok; tüm Claude modelleri kredi kullanır. Ücretsiz modellerin hız sınırı vardır ve OpenRouter bunları zamanla değiştirebilir. Önerilen liste her açılışta canlı olarak kontrol edilir.
 
-1. **OpenRouter anahtarı al:** https://openrouter.ai/keys → "Create Key". Ücretli modeller için Credits sayfasından biraz bakiye yükle. Sadece ücretsiz modelleri kullanacaksan bakiye gerekmez.
-2. **GitHub'a yükle:** Yeni bir **private** repo aç ve bu klasörü yükle. `.env` dosyası yükleme; `.gitignore` zaten engelliyor.
-3. **Vercel'e bağla:** https://vercel.com/new → repoyu seç. Framework olarak Next.js otomatik tanınır.
-4. **Environment Variables** bölümüne şunları ekle:
-   - `OPENROUTER_API_KEY` = OpenRouter anahtarın
-   - `ACCESS_PASSWORD` = siteye giriş şifresi (uzun ve tahmin edilemez olsun)
-   - `AUTH_SECRET` = rastgele uzun bir metin (isteğe bağlı ama önerilir)
-   - `DEFAULT_MODEL` = örneğin `openai/gpt-4o-mini` (isteğe bağlı)
-5. **Deploy** butonuna bas. Çıkan `.vercel.app` linkini aç ve şifreyle gir.
+## Vercel kurulumu
 
-> `ACCESS_PASSWORD` boş bırakılırsa site kimseyi içeri almaz. Bu bilinçli bir tercih; bakiyeni korumak için.
+### 1. Veritabanı (zorunlu)
+Vercel'de projeni aç → **Storage** → **Create Database** → **Neon** (Serverless Postgres) → projeye bağla.
+`DATABASE_URL` otomatik eklenir. Tablolar ilk açılışta kendiliğinden oluşur.
 
-## Bilinmesi gerekenler
+### 2. Dosya deposu (önerilir)
+**Storage** → **Create** → **Blob** → erişim olarak **Private** seç → projeye bağla.
+`BLOB_READ_WRITE_TOKEN` otomatik eklenir.
+- Blob varsa: dosya başına 25 MB, telefon fotoğrafları orijinal kalitede saklanır.
+- Blob yoksa: dosyalar veritabanında tutulur, en fazla 4 MB. Büyük fotoğraflar 2560 px'e küçültülür.
+- Blob'u *Public* oluşturduysan `BLOB_ACCESS=public` ekle.
 
-- **Sohbet geçmişi** sadece o tarayıcıda (localStorage) tutulur. Sunucuda kayıt veya log tutulmaz. Başka cihazdan girildiğinde geçmiş görünmez.
-- **Gizlilik:** Yazılan her şey Vercel → OpenRouter → model sağlayıcısı (OpenAI, Anthropic vb.) zincirinden geçer. Ücretsiz modellerin bazı sağlayıcıları verileri eğitim için kullanabilir. Hassas veya şirket bilgisi yazmamak gerekir.
-- **Boyut sınırı:** Vercel tek istekte en fazla ~4.5 MB kabul eder. Bu yüzden PDF en fazla 3 MB olabilir, fotoğraflar da küçültülerek gönderilir.
-- **Süre sınırı:** Bir cevap en fazla 60 saniye sürebilir (`app/api/chat/route.ts` içindeki `maxDuration`). Vercel projende Fluid Compute açıksa bunu 300'e çıkarabilirsin.
-- **Ücretsiz modeller:** OpenRouter'da günlük ve dakikalık istek sınırları vardır. "Hız sınırı" hatası görürsen biraz bekle veya başka model seç.
-- **Görsel:** Fotoğraf eklediysen modelin "Görsel" rozeti olması gerekir. Rozet yoksa uygulama seni uyarır.
+### 3. Ortam değişkenleri
+**Settings → Environment Variables** sayfasına şunları ekle:
+
+| Ad | Değer |
+|---|---|
+| `OPENROUTER_API_KEY` | OpenRouter anahtarın |
+| `INVITE_CODE` | Kayıt için davet kodu (uzun bir şey seç) |
+
+Eski sürümden kalan `ACCESS_PASSWORD` ve `AUTH_SECRET` artık kullanılmıyor, silebilirsin.
+
+### 4. Yeniden deploy
+**Deployments → ⋯ → Redeploy**. Ardından siteyi aç, **Kayıt ol** sekmesinden davet koduyla hesabını oluştur.
+
+## Güvenlik notları
+
+- Şifreler düz metin olarak saklanmaz; scrypt ile özetlenir. Oturumlar 30 gün geçerlidir.
+- Dosyalar private depoda durur. Sadece yükleyen kişi, giriş yapmışken açabilir veya indirebilir.
+- API anahtarı yalnızca sunucuda kullanılır, tarayıcıya hiç gönderilmez.
+- Davet kodunu verdiğin herkes kayıt olabilir ve **senin OpenRouter bakiyeni** harcayabilir. OpenRouter'da anahtarına harcama limiti koymanı öneririm.
+- Yazılanlar OpenRouter ve model sağlayıcısına (OpenAI, Anthropic vb.) gider. Ücretsiz modellerin bazı sağlayıcıları veriyi eğitimde kullanabilir. Hassas veya şirket bilgisi yazma.
 
 ## Bilgisayarda çalıştırma
 
 ```bash
 npm install
-cp .env.example .env.local   # içini doldur
+cp .env.example .env.local   # DATABASE_URL, OPENROUTER_API_KEY, INVITE_CODE doldur
 npm run dev                  # http://localhost:3000
 ```
 
 ## Dosya yapısı
 
-- `app/api/chat/route.ts`: Mesajı OpenRouter'a iletir. Anahtar sadece burada kullanılır.
-- `app/api/models/route.ts`: Model listesini çeker, ücretsizleri işaretler.
-- `app/api/login/route.ts` ve `middleware.ts`: Şifre koruması.
+- `app/api/chat`: Geçmişi veritabanından kurar, OpenRouter'a iletir, cevabı hem akıtır hem kaydeder.
+- `app/api/auth/*`: Kayıt, giriş ve çıkış.
+- `app/api/conversations/*`: Sohbet listesi, açma, yeniden adlandırma, silme.
+- `app/api/files/*`: Yükleme (Blob veya veritabanı) ve indirme (sahiplik kontrollü).
+- `app/api/models`: Model listesi ve önerilen modeller.
+- `lib/db.ts`: Postgres bağlantısı ve otomatik tablo kurulumu.
 - `components/Chat.tsx`: Ana arayüz.
-- `components/ModelPicker.tsx`: Model seçme menüsü.

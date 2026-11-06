@@ -25,5 +25,7 @@ export const Icon = {
   File: () => <Svg><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6" /></Svg>,
   ChevronDown: () => <Svg size={14}><path d="m6 9 6 6 6-6" /></Svg>,
   Search: () => <Svg size={16}><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></Svg>,
+  Download: () => <Svg size={16}><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></Svg>,
+  Logout: () => <Svg size={16}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" /></Svg>,
   Sparkle: () => <Svg size={22}><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8" /></Svg>,
 };
