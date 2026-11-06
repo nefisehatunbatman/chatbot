@@ -2,8 +2,19 @@ node_modules
 .next
 out
 .env
-.env.local
-.env*.local
+.env.*
+!.env.example
+# Local credentials and private keys
+*.pem
+*.key
+*.p12
+*.pfx
+.npmrc
+.netrc
+.aws/
+.ssh/
+credentials.json
+secrets.json
 .vercel
 *.tsbuildinfo
 next-env.d.ts
