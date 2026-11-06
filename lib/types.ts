@@ -6,9 +6,13 @@ export type ModelInfo = {
   image: boolean;
   promptPrice: number; // $ / token
   completionPrice: number; // $ / token
+  // site: sitenin OpenRouter anahtarı · own: kullanıcının OpenRouter anahtarı · gemini: kullanıcının Gemini anahtarı
+  source: "site" | "own" | "gemini";
 };
 
 export type Recommended = { free: string[]; paid: string[] };
+
+export type Tier = "free" | "pro" | "own";
 
 export type AttachmentMeta = {
   id: string;
@@ -45,6 +49,14 @@ export type ConvSummary = { id: string; title: string; updatedAt: number };
 export type Theme = "system" | "light" | "dark";
 
 export type Me = {
-  user: { id: string; username: string; settings: { system?: string; theme?: Theme; model?: string } };
+  user: {
+    id: string;
+    username: string;
+    settings: { system?: string; theme?: Theme; model?: string };
+    isPro: boolean;
+    isAdmin: boolean;
+  };
+  keys: { gemini: string | null; openrouter: string | null }; // maskeli gösterim
+  keysEnabled: boolean;
   blob: { enabled: boolean; access: "public" | "private" };
 };

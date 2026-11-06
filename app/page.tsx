@@ -1,15 +1,16 @@
 import { redirect } from "next/navigation";
 import Chat from "@/components/Chat";
 import { getUser } from "@/lib/auth";
-import { blobAccess, blobEnabled } from "@/lib/blobstore";
+import { buildMe } from "@/lib/me";
 import type { Me } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export default async function Page() {
-  let user;
+  let me: Me | null = null;
   try {
-    user = await getUser();
+    const user = await getUser();
+    if (user) me = await buildMe(user);
   } catch (e) {
     return (
       <div className="login">
@@ -21,11 +22,6 @@ export default async function Page() {
       </div>
     );
   }
-  if (!user) redirect("/login");
-
-  const me: Me = {
-    user: { id: user.id, username: user.username, settings: user.settings || {} },
-    blob: { enabled: blobEnabled(), access: blobAccess() },
-  };
+  if (!me) redirect("/login");
   return <Chat initialMe={me} />;
 }

@@ -5,13 +5,13 @@ import { blobDelete } from "@/lib/blobstore";
 import { deleteMessagesAfter, getOwnedConversation, loadMessages, makeTitle, type MessageOut } from "@/lib/conversations";
 import { q, tx } from "@/lib/db";
 import { handle, HttpError, newId, readJson } from "@/lib/http";
+import { resolveRoute } from "@/lib/models";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 // Uzun cevaplar için. Vercel Hobby planında 60 güvenli; Fluid Compute açıksa 300'e çıkarabilirsin.
 export const maxDuration = 60;
 
-const OPENROUTER = process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
 const BINARY_TURNS = 4; // Görsel/PDF'ler son 4 kullanıcı mesajı için tekrar gönderilir
 
 type Body = {
@@ -32,13 +32,12 @@ type Part =
 // Akış: tarayıcı → burası (geçmişi DB'den kurar) → OpenRouter → cevap hem tarayıcıya akar hem DB'ye kaydedilir.
 export const POST = handle(async (req: Request) => {
   const user = await requireUser();
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) throw new HttpError(500, "Sunucuda OPENROUTER_API_KEY ayarlanmamış.");
-
   const b = await readJson<Body>(req);
   const mode = b.mode || "send";
   const model = typeof b.model === "string" ? b.model.slice(0, 200) : "";
   if (!model) throw new HttpError(400, "Model seçilmedi.");
+  // Model erişim kontrolü HER ŞEYDEN ÖNCE: izin yoksa hiçbir şey kaydedilmez, kredi harcanmaz
+  const route = await resolveRoute(user, model);
   const text = typeof b.text === "string" ? b.text.slice(0, 100_000) : "";
   const attachmentIds = Array.isArray(b.attachmentIds) ? b.attachmentIds.filter((x) => typeof x === "string").slice(0, 20) : [];
 
@@ -95,7 +94,7 @@ export const POST = handle(async (req: Request) => {
 
   // 2) Geçmişi OpenRouter formatına çevir
   const history = await loadMessages(convId);
-  const apiMessages = await buildApiMessages(history, b.imageSupport !== false);
+  const apiMessages = await buildApiMessages(history, b.imageSupport !== false, route.provider !== "gemini");
   const system = (user.settings?.system || "").trim();
   const finalMessages = system ? [{ role: "system", content: system }, ...apiMessages] : apiMessages;
 
@@ -112,32 +111,47 @@ export const POST = handle(async (req: Request) => {
   req.signal.addEventListener("abort", () => ac.abort());
   let upstream: Response;
   try {
-    upstream = await fetch(`${OPENROUTER}/chat/completions`, {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${route.apiKey}`,
+      "Content-Type": "application/json",
+    };
+    if (route.provider === "openrouter") {
+      headers["HTTP-Referer"] = process.env.SITE_URL || "https://vercel.app";
+      headers["X-Title"] = "Coklu AI Sohbet";
+    }
+    upstream = await fetch(route.url, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.SITE_URL || "https://vercel.app",
-        "X-Title": "Coklu AI Sohbet",
-      },
-      body: JSON.stringify({ model, messages: finalMessages, stream: true }),
+      headers,
+      body: JSON.stringify({ model: route.model, messages: finalMessages, stream: true }),
       signal: ac.signal,
     });
   } catch (e) {
-    const msg = `OpenRouter'a ulaşılamadı: ${(e as Error).message}`;
+    const msg = `${route.provider === "gemini" ? "Gemini" : "OpenRouter"}'a ulaşılamadı: ${(e as Error).message}`;
     await saveAssistant("", "", msg);
     return NextResponse.json({ error: msg, conversationId: convId }, { status: 502, headers: { "X-Conversation-Id": convId } });
   }
 
   if (!upstream.ok || !upstream.body) {
     const raw = await upstream.text().catch(() => "");
-    let msg = raw || `OpenRouter hatası (${upstream.status})`;
+    const who = route.provider === "gemini" ? "Gemini" : "OpenRouter";
+    let msg = raw || `${who} hatası (${upstream.status})`;
     try {
-      const j = JSON.parse(raw);
+      let j = JSON.parse(raw);
+      if (Array.isArray(j)) j = j[0]; // Gemini bazen hatayı dizi içinde döner
       msg = j?.error?.metadata?.raw || j?.error?.message || msg;
     } catch {}
-    if (upstream.status === 402) msg = "OpenRouter bakiyesi yetersiz. Ücretsiz bir model seç veya bakiye yükle.";
-    if (upstream.status === 429) msg = "Hız sınırına takıldın (ücretsiz modellerde sık olur). Biraz bekle veya başka model seç.";
+    const own = route.billing === "own";
+    if (upstream.status === 401 || (route.provider === "gemini" && upstream.status === 400 && /API key/i.test(msg))) {
+      msg = own ? `${who} anahtarın geçersiz veya süresi dolmuş. Ayarlar'dan güncelle.` : "Sitenin OpenRouter anahtarı geçersiz.";
+    }
+    if (upstream.status === 402) {
+      msg = own ? "Kendi OpenRouter hesabında bakiye yetersiz." : "Sitenin OpenRouter bakiyesi yetersiz. Ücretsiz bir model seç.";
+    }
+    if (upstream.status === 429) {
+      msg = route.provider === "gemini"
+        ? "Gemini kotası doldu (ücretsiz kotada sık olur). Biraz bekle veya başka model seç."
+        : "Hız sınırına takıldın (ücretsiz modellerde sık olur). Biraz bekle veya başka model seç.";
+    }
     msg = String(msg).slice(0, 500);
     await saveAssistant("", "", msg);
     return NextResponse.json({ error: msg, conversationId: convId }, { status: upstream.status, headers: { "X-Conversation-Id": convId } });
@@ -215,7 +229,7 @@ export const POST = handle(async (req: Request) => {
   });
 });
 
-async function buildApiMessages(history: MessageOut[], allowImages: boolean) {
+async function buildApiMessages(history: MessageOut[], allowImages: boolean, allowPdf: boolean) {
   const userIdx = history.map((m, i) => (m.role === "user" ? i : -1)).filter((i) => i >= 0);
   const binaryFrom = userIdx.length > BINARY_TURNS ? userIdx[userIdx.length - BINARY_TURNS] : 0;
 
@@ -243,6 +257,10 @@ async function buildApiMessages(history: MessageOut[], allowImages: boolean) {
           const { bytes, mime } = await attachmentBytes(a.id, "model");
           parts.push({ type: "image_url", image_url: { url: `data:${mime};base64,${bytes.toString("base64")}` } });
         } else if (a.kind === "pdf") {
+          if (!allowPdf) {
+            text += `\n[PDF: ${a.name} — bu sağlayıcı PDF eki desteklemiyor]`;
+            continue;
+          }
           const { bytes } = await attachmentBytes(a.id, "original");
           parts.push({ type: "file", file: { filename: a.name, file_data: `data:application/pdf;base64,${bytes.toString("base64")}` } });
         }

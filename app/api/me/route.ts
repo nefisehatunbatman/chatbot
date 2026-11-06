@@ -1,17 +1,14 @@
 import { NextResponse } from "next/server";
 import { requireUser, type UserSettings } from "@/lib/auth";
-import { blobAccess, blobEnabled } from "@/lib/blobstore";
 import { q } from "@/lib/db";
 import { handle, HttpError, readJson } from "@/lib/http";
+import { buildMe } from "@/lib/me";
 
 export const dynamic = "force-dynamic";
 
 export const GET = handle(async () => {
   const user = await requireUser();
-  return NextResponse.json({
-    user: { id: user.id, username: user.username, settings: user.settings || {} },
-    blob: { enabled: blobEnabled(), access: blobAccess() },
-  });
+  return NextResponse.json(await buildMe(user));
 });
 
 // Ayarlar (sistem talimatı, tema, son model) kullanıcıya özel saklanır.

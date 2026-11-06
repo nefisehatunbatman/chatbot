@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 CREATE INDEX IF NOT EXISTS attachments_msg_idx ON attachments(message_id);
 CREATE INDEX IF NOT EXISTS attachments_user_idx ON attachments(user_id, created_at);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_pro BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS api_keys JSONB NOT NULL DEFAULT '{}'::jsonb;
 `;
 
 async function ensureSchema() {

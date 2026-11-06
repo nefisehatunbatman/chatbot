@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "./Markdown";
 import ModelPicker from "./ModelPicker";
 import { Icon } from "./Icons";
-import type { AttachmentMeta, ConvSummary, Me, ModelInfo, Msg, PendingAttachment, Recommended, Theme } from "@/lib/types";
+import type { AttachmentMeta, ConvSummary, Me, ModelInfo, Msg, PendingAttachment, Recommended, Theme, Tier } from "@/lib/types";
+import { AdminPanel, KeysSettings } from "./Account";
 import { ACCEPT, formatSize, uploadAttachment } from "@/lib/files";
 import { readSSE } from "@/lib/sse";
 
@@ -94,7 +95,9 @@ function PendingChip({ p, onRemove }: { p: PendingAttachment; onRemove: () => vo
 }
 
 export default function Chat({ initialMe }: { initialMe: Me }) {
-  const [me] = useState<Me>(initialMe);
+  const [me, setMe] = useState<Me>(initialMe);
+  const [tier, setTier] = useState<Tier>(initialMe.user.isPro ? "pro" : "free");
+  const [adminOpen, setAdminOpen] = useState(false);
   const [convs, setConvs] = useState<ConvSummary[]>([]);
   const [convsLoaded, setConvsLoaded] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -137,16 +140,24 @@ export default function Chat({ initialMe }: { initialMe: Me }) {
     }
   }, []);
 
-  useEffect(() => {
-    refreshConvs();
-    api<{ models: ModelInfo[]; recommended: Recommended; defaultModel: string }>("/api/models")
+  const loadModels = useCallback(() => {
+    setModelsError(null);
+    api<{ models: ModelInfo[]; recommended: Recommended; defaultModel: string; tier: Tier; geminiError: string | null }>("/api/models")
       .then((j) => {
         setModels(j.models);
         setRecommended(j.recommended);
-        setModel((cur) => (cur && j.models.some((m) => m.id === cur) ? cur : j.defaultModel || j.models[0]?.id || cur));
+        setTier(j.tier);
+        if (j.geminiError) setNotice(`Gemini modelleri yüklenemedi: ${j.geminiError}`);
+        // Seçili model artık izinli değilse (ör. pro yetkisi kalktıysa) varsayılana dön
+        setModel((cur) => (cur && j.models.some((m) => m.id === cur) ? cur : j.defaultModel || j.models[0]?.id || ""));
       })
       .catch((e) => setModelsError(e.message));
-  }, [refreshConvs]);
+  }, []);
+
+  useEffect(() => {
+    refreshConvs();
+    loadModels();
+  }, [refreshConvs, loadModels]);
 
   // Ayarlar sunucuda, kullanıcıya özel saklanır (her cihazda aynı)
   useEffect(() => {
@@ -481,7 +492,7 @@ export default function Chat({ initialMe }: { initialMe: Me }) {
               e.target.value = "";
             }}
           />
-          <ModelPicker models={models} recommended={recommended} value={model} onChange={setModel} error={modelsError} />
+          <ModelPicker models={models} recommended={recommended} tier={tier} value={model} onChange={setModel} error={modelsError} />
           <div className="spacer" />
           {streaming ? (
             <button className="send-btn" title="Durdur" onClick={stop}><Icon.Stop /></button>
@@ -544,7 +555,12 @@ export default function Chat({ initialMe }: { initialMe: Me }) {
         </div>
         <button className="sidebar-foot" onClick={() => setSettingsOpen(true)}>
           <span className="avatar">{me.user.username.slice(0, 1).toUpperCase()}</span>
-          <span className="foot-name">{me.user.username}</span>
+          <span className="foot-name">
+            {me.user.username}
+            <span className={"tier-badge " + tier}>
+              {me.user.isAdmin ? "Admin" : tier === "own" ? "Kendi anahtarı" : tier === "pro" ? "Pro" : "Ücretsiz"}
+            </span>
+          </span>
           <Icon.Settings />
         </button>
       </aside>
@@ -639,7 +655,19 @@ export default function Chat({ initialMe }: { initialMe: Me }) {
               <h2>Ayarlar</h2>
               <button className="icon-btn" onClick={() => setSettingsOpen(false)} title="Kapat"><Icon.X /></button>
             </div>
-            <p className="muted small">Giriş yapan: <b>{me.user.username}</b></p>
+            <p className="muted small">
+              Giriş yapan: <b>{me.user.username}</b> ·{" "}
+              {tier === "own"
+                ? "kendi OpenRouter anahtarınla tüm modeller açık"
+                : tier === "pro"
+                  ? "pro: tüm modeller açık"
+                  : "ücretsiz hesap: sadece ücretsiz modeller"}
+            </p>
+            {me.user.isAdmin && (
+              <button className="btn" onClick={() => { setSettingsOpen(false); setAdminOpen(true); }}>
+                👥 Kullanıcıları yönet (pro yetkisi)
+              </button>
+            )}
             <label className="field">
               <span>Sistem talimatı (her sohbete eklenir)</span>
               <textarea
@@ -657,6 +685,13 @@ export default function Chat({ initialMe }: { initialMe: Me }) {
                 <option value="dark">Koyu</option>
               </select>
             </label>
+            <KeysSettings
+              me={me}
+              onChange={(next) => {
+                setMe(next);
+                loadModels();
+              }}
+            />
             <p className="muted small">
               Sohbetlerin ve eklerin hesabına kayıtlı; telefondan veya başka bir bilgisayardan girdiğinde de görünür.
             </p>
@@ -668,6 +703,8 @@ export default function Chat({ initialMe }: { initialMe: Me }) {
           </div>
         </div>
       )}
+
+      {adminOpen && <AdminPanel onClose={() => setAdminOpen(false)} />}
 
       {dragging && (
         <div className="drop-overlay">

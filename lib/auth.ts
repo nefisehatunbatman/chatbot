@@ -10,7 +10,11 @@ export const SESSION_COOKIE = "orc_session";
 const SESSION_DAYS = 30;
 
 export type UserSettings = { system?: string; theme?: "system" | "light" | "dark"; model?: string };
-export type User = { id: string; username: string; settings: UserSettings };
+export type User = { id: string; username: string; settings: UserSettings; isPro: boolean; isAdmin: boolean };
+
+// Admin: Vercel'deki ADMIN_USERNAME ile aynı kullanıcı adı. Admin her zaman pro'dur.
+export const isAdminName = (username: string) =>
+  !!process.env.ADMIN_USERNAME && process.env.ADMIN_USERNAME.trim().toLowerCase() === username;
 
 // Şifre asla düz metin saklanmaz: rastgele tuz + scrypt özeti saklanır.
 export async function hashPassword(pw: string) {
@@ -60,12 +64,15 @@ export async function getUser(): Promise<User | null> {
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE)?.value;
   if (!token) return null;
-  const rows = await q<User>(
-    `SELECT u.id, u.username, u.settings FROM sessions s JOIN users u ON u.id = s.user_id
+  const rows = await q<{ id: string; username: string; settings: UserSettings; is_pro: boolean }>(
+    `SELECT u.id, u.username, u.settings, u.is_pro FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.token_hash = $1 AND s.expires_at > now()`,
     [sha256(token)]
   );
-  return rows[0] || null;
+  const r = rows[0];
+  if (!r) return null;
+  const isAdmin = isAdminName(r.username);
+  return { id: r.id, username: r.username, settings: r.settings || {}, isAdmin, isPro: isAdmin || r.is_pro };
 }
 
 export async function requireUser(): Promise<User> {
